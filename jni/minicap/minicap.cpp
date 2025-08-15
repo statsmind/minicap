@@ -151,6 +151,19 @@ putUInt32LE(unsigned char* data, int value) {
 }
 
 static int
+putUInt64LE(unsigned char* data, long value) {
+    data[0] = (value & 0x00000000000000FF) >> 0;
+    data[1] = (value & 0x000000000000FF00) >> 8;
+    data[2] = (value & 0x0000000000FF0000) >> 16;
+    data[3] = (value & 0x00000000FF000000) >> 24;
+    data[4] = (value & 0x000000FF00000000) >> 32;
+    data[5] = (value & 0x0000FF0000000000) >> 40;
+    data[6] = (value & 0x00FF000000000000) >> 48;
+    data[7] = (value & 0xFF00000000000000) >> 56;
+    return 0;
+}
+
+static int
 try_get_framebuffer_display_info(uint32_t displayId, Minicap::DisplayInfo* info) {
   char path[64];
   sprintf(path, "/dev/graphics/fb%d", displayId);
@@ -338,6 +351,7 @@ main(int argc, char* argv[]) {
   }
 
   std::cerr << "PID: " << getpid() << std::endl;
+  std::cerr << "INFO: Version = v0.0.1" << std::endl;
   std::cerr << "INFO: Using projection " << proj << std::endl;
 
   // Disable STDOUT buffering.
@@ -356,7 +370,7 @@ main(int argc, char* argv[]) {
 
   // Leave a 4-byte padding to the encoder so that we can inject the size
   // to the same buffer.
-  JpgEncoder encoder(4, 0);
+  JpgEncoder encoder(12, 0);
   Minicap::Frame frame;
   bool haveFrame = false;
 
@@ -506,6 +520,13 @@ main(int argc, char* argv[]) {
 
       haveFrame = true;
 
+      auto now = std::chrono::system_clock::now();
+      // 转换为毫秒精度的时长
+      auto duration = now.time_since_epoch();
+      auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(duration);
+      // 转换为 long 类型返回
+      long timestamp = static_cast<long>(millis.count());
+
       // Encode the frame.
       if (!encoder.encode(&frame, quality)) {
         MCERROR("Unable to encode frame");
@@ -514,12 +535,13 @@ main(int argc, char* argv[]) {
 
       // Push it out synchronously because it's fast and we don't care
       // about other clients.
-      unsigned char* data = encoder.getEncodedData() - 4;
+      unsigned char* data = encoder.getEncodedData() - 12;
       size_t size = encoder.getEncodedSize();
 
-      putUInt32LE(data, size);
+      putUInt64LE(data, timestamp);
+      putUInt32LE(data + 8, size);
 
-      if (pumps(fd, data, size + 4) < 0) {
+      if (pumps(fd, data, size + 12) < 0) {
         break;
       }
 
