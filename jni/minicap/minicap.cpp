@@ -351,7 +351,7 @@ main(int argc, char* argv[]) {
   }
 
   std::cerr << "PID: " << getpid() << std::endl;
-  std::cerr << "INFO: Version = v0.0.1" << std::endl;
+  std::cerr << "INFO: Version = v0.0.3" << std::endl;
   std::cerr << "INFO: Using projection " << proj << std::endl;
 
   // Disable STDOUT buffering.
@@ -370,7 +370,7 @@ main(int argc, char* argv[]) {
 
   // Leave a 4-byte padding to the encoder so that we can inject the size
   // to the same buffer.
-  JpgEncoder encoder(12, 0);
+  JpgEncoder encoder(13, 0);
   Minicap::Frame frame;
   bool haveFrame = false;
 
@@ -482,30 +482,63 @@ main(int argc, char* argv[]) {
       continue;
     }
 
-    int pending, err;
+    int pending, err, prev_width;
+    Minicap::DisplayInfo info;
+
     while (!gWaiter.isStopped() && (pending = gWaiter.waitForFrame()) > 0) {
-      auto frameAvailableAt = std::chrono::steady_clock::now();
-      if (skipFrames && pending > 1) {
-        // Skip frames if we have too many. Not particularly thread safe,
-        // but this loop should be the only consumer anyway (i.e. nothing
-        // else decreases the frame count).
-        gWaiter.reportExtraConsumption(pending - 1);
-
-        while (--pending >= 1) {
-          if ((err = minicap->consumePendingFrame(&frame)) != 0) {
-            if (err == -EINTR) {
-              MCINFO("Frame consumption interrupted by EINTR");
-              goto close;
+        if (minicap_try_get_display_info(displayId, &info) != 0)
+        {
+            if (try_get_framebuffer_display_info(displayId, &info) != 0)
+            {
+                MCERROR("Unable to get display info");
+                return EXIT_FAILURE;
             }
-            else {
-              MCERROR("Unable to skip pending frame");
-              goto disaster;
-            }
-          }
-
-          minicap->releaseConsumedFrame(&frame);
         }
-      }
+
+        if (desiredInfo.orientation != info.orientation)
+        {
+            desiredInfo.orientation = info.orientation;
+            if (minicap->setDesiredInfo(desiredInfo) != 0)
+            {
+                MCERROR("Minicap did not accept desired display info");
+                goto disaster;
+            }
+
+            if (minicap->applyConfigChanges() != 0)
+            {
+                MCERROR("Unable to start minicap with current config");
+                goto disaster;
+            }
+            else
+                continue;
+        }
+        auto frameAvailableAt = std::chrono::steady_clock::now();
+        if (skipFrames && pending > 1)
+        {
+            // Skip frames if we have too many. Not particularly thread safe,
+            // but this loop should be the only consumer anyway (i.e. nothing
+            // else decreases the frame count).
+            gWaiter.reportExtraConsumption(pending - 1);
+
+            while (--pending >= 1)
+            {
+                if ((err = minicap->consumePendingFrame(&frame)) != 0)
+                {
+                    if (err == -EINTR)
+                    {
+                        MCINFO("Frame consumption interrupted by EINTR");
+                        goto close;
+                    }
+                    else
+                    {
+                        MCERROR("Unable to skip pending frame");
+                        goto disaster;
+                    }
+                }
+
+                minicap->releaseConsumedFrame(&frame);
+            }
+        }
 
       if ((err = minicap->consumePendingFrame(&frame)) != 0) {
         if (err == -EINTR) {
@@ -535,13 +568,14 @@ main(int argc, char* argv[]) {
 
       // Push it out synchronously because it's fast and we don't care
       // about other clients.
-      unsigned char* data = encoder.getEncodedData() - 12;
+      unsigned char* data = encoder.getEncodedData() - 13;
       size_t size = encoder.getEncodedSize();
 
       putUInt64LE(data, timestamp);
-      putUInt32LE(data + 8, size);
+      data[8] = info.orientation & 0x000000FF;
+      putUInt32LE(data + 9, size);
 
-      if (pumps(fd, data, size + 12) < 0) {
+      if (pumps(fd, data, size + 13) < 0) {
         break;
       }
 
